@@ -36,7 +36,6 @@ sieve_execute_bin_dir = /usr/local/bin
 # Perform actions for WKS requests.
 sieve_script wks {
   type = before
-  #cause = copy
   path = /mnt/mail/home/vmail/sieve/global/wks.sieve
 }
 

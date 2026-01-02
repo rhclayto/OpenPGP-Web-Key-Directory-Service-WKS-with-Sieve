@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+shopt -s lastpipe
+
+export GNUPGHOME="/mnt/mail/home/vmail/.gnupg"
+
+domain="${1}"
+email="${2}"
+date="$(date)"
+
+# New method.
+# Log, notify, cleanup, & exit function.
+log_notify_die() {
+  status="$1"
+  # Log to Dovecot.
+  >&2 echo "WKS submission ${status} for ${email}."
+  if [ "$status" = "failure" ]; then
+    header_sender="Subject: WKS Submission Failed"
+    header_admin="$header_sender"
+    body_sender="${date} - WKS Submission for ${email} failed. Did you attach a single public key in .asc format? Did you make sure not to encrypt or sign the e-mail? Try those, & if it still fails, contact admin@example.com."
+    body_admin="${date} - WKS Submission for ${email} failed. You might want to check it out."
+    exit_code=1
+  else
+    header_sender="Subject: WKS Key Submission Successful"
+    header_admin="Subject: WKS Submission Performed"
+    body_sender="${date} - Hooray! Your key was added to the WKD system of 2 Mile Bridge."
+    body_admin="${date} - WKS Submission for ${email} was successfully performed."
+    exit_code=0
+  fi
+  # Notify the sender.
+  /usr/bin/swaks --silent 3 --to "$email" --from noreply@example.com --server 127.0.0.1:25 --header "$header_sender" --header "X-Mailer: Nuffink" --body "$body_sender"
+  # Notify the admin.
+  /usr/bin/swaks --silent 3 --to admin@example.com --from noreply@example.com --server 127.0.0.1:25 --header "$header_admin" --header "X-Mailer: Nuffink" --body "$body_admin"
+  # Delete the directory.
+  rm -r /mnt/mail/home/vmail/tmp/${email}
+  # Exit with the proper code.
+  exit "$exit_code"
+}
+# Create a temporary directory.
+mkdir /mnt/mail/home/vmail/tmp/${email}
+pussycat=""
+# Get the parts of the e-mail passed in by sieve's vnd.dovecot.pipe, & store them in a variable.
+/usr/bin/ripmime --stdout -v -i - -d /mnt/mail/home/vmail/tmp/${email} | pussycat=$(</dev/stdin) || { log_notify_die failure; }
+# Loop through the e-mail parts, looking for an .asc attachment.
+while IFS= read -r line; do
+  # Get the first .asc file. If they sent multiple .asc files, fuck 'em.
+  if [[ $line =~ ".asc" ]]; then
+    # Get the name of the key file.
+    keyname=$(echo $line| cut -d'=' -f 2)
+    # Import the key with GPG.
+    /usr/bin/gpg --import /mnt/mail/home/vmail/tmp/${email}/${keyname} || { log_notify_die failure; }
+    # Get the key fingerprints.
+    prints=$(/usr/bin/gpg --fingerprint --with-colons ${email}) || { log_notify_die failure; }
+    # Loop through the output of the above, looking for the fingerprint line.
+    while IFS2= read -r line2; do
+      # We want the first fingerprint line.
+      if [[ $line2 =~ "fpr:" ]]; then
+        # Strip extra characters to get the fingerprint itself.
+        print=$(echo "${line2//:}"| tr -d 'fpr')
+        # Install the key using the fingerprint & passed-in e-mail address.
+        /usr/bin/gpg-wks-server --directory /mnt/openpgpkey/.well-known/openpgpkey --install-key ${print} ${email}
+        rc=$?
+        # Something went wrong.
+        if [ ${rc} != 0 ]; then log_notify_die failure;
+        # Success!
+        else log_notify_die success;
+        fi
+      fi
+    done < <(printf '%s\n' "$prints")
+  fi
+done < <(printf '%s\n' "$pussycat")
+# Nothing was accomplished. Nothing.
+log_notify_die failure
+
+# Old non-working method.
+#/usr/bin/gpg-wks-server --verbose --directory /mnt/openpgpkey/.well-known/openpgpkey --receive --from wkd-submission@${domain} --output /mnt/mail/home/vmail/tmp/${email}.mailfile
+#/usr/bin/gpg-wks-server --verbose --directory /mnt/openpgpkey/.well-known/openpgpkey --receive --from wkd-submission@${domain} --output - | /usr/sbin/sendmail -f wkd-submission@${domain} ${email}
+#/usr/bin/cat /mnt/mail/home/vmail/tmp/${email}.mailfile | /usr/sbin/sendmail -f wkd-submission@${domain} ${email}
+#/usr/bin/rm /mnt/mail/home/vmail/tmp/${email}.mailfile
